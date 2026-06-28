@@ -111,6 +111,12 @@ export const adminApi = {
   updateEndpointVisibility: (id, visibility) => api.put(`/api/admin/endpoints/${id}/visibility`, { visibility }),
   deleteRepository: (id) => api.delete(`/api/admin/repositories/${id}`),
   deleteEndpoint: (id) => api.delete(`/api/admin/endpoints/${id}`),
+  exportBackup: () => api.get('/api/admin/backup/export', { responseType: 'blob' }),
+  importBackup: (file) => api.post('/api/admin/backup/import', file, {
+    headers: {
+      'Content-Type': 'application/octet-stream'
+    }
+  }),
   // AI 配置
   getAiConfig: () => api.get('/api/admin/ai-config'),
   saveAiConfig: (config) => api.post('/api/admin/ai-config', config),

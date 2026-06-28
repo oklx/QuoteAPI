@@ -1,9 +1,12 @@
 import express from 'express';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js';
 import { Repository } from '../models/Repository.js';
 import { Endpoint } from '../models/Endpoint.js';
 import systemConfig from '../models/SystemConfig.js';
 import dbManager from '../config/database.js';
+import config from '../config/index.js';
 
 const router = express.Router();
 const repoModel = new Repository();
@@ -12,6 +15,64 @@ const endpointModel = new Endpoint();
 // 所有路由都需要管理员权限
 router.use(authMiddleware);
 router.use(adminMiddleware);
+
+// 导出完整数据库备份
+router.get('/backup/export', async (req, res) => {
+  const backupDir = join(dirname(config.dbPath), 'backups');
+  if (!existsSync(backupDir)) {
+    mkdirSync(backupDir, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `quoteapi-backup-${timestamp}.db`;
+  const backupPath = join(backupDir, filename);
+
+  try {
+    await dbManager.createBackupFile(backupPath);
+    res.download(backupPath, filename, (error) => {
+      if (existsSync(backupPath)) {
+        unlinkSync(backupPath);
+      }
+      if (error && !res.headersSent) {
+        res.status(500).json({ error: '导出备份失败' });
+      }
+    });
+  } catch (error) {
+    console.error('Error exporting backup:', error);
+    if (existsSync(backupPath)) {
+      unlinkSync(backupPath);
+    }
+    res.status(500).json({ error: error.message || '导出备份失败' });
+  }
+});
+
+// 导入完整数据库备份
+router.post('/backup/import', express.raw({ type: '*/*', limit: '500mb' }), async (req, res) => {
+  const backupDir = join(dirname(config.dbPath), 'backups');
+  if (!existsSync(backupDir)) {
+    mkdirSync(backupDir, { recursive: true });
+  }
+
+  const importPath = join(backupDir, `quoteapi-import-${Date.now()}.db`);
+
+  try {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: '请上传有效的 SQLite 备份文件' });
+    }
+
+    writeFileSync(importPath, req.body);
+    await dbManager.replaceDatabaseFromFile(importPath);
+
+    res.json({ message: '导入成功，数据库已替换并完成兼容性迁移' });
+  } catch (error) {
+    console.error('Error importing backup:', error);
+    res.status(400).json({ error: error.message || '导入失败' });
+  } finally {
+    if (existsSync(importPath)) {
+      unlinkSync(importPath);
+    }
+  }
+});
 
 // 获取所有仓库（包含用户信息）
 router.get('/repositories', (req, res) => {

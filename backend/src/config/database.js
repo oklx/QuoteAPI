@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
+import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import config from '../config/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +20,7 @@ class DatabaseManager {
 
     this.db = new Database(config.dbPath);
     this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
     this.createTables();
     await this.initDefaultAdmin();
   }
@@ -155,9 +156,99 @@ class DatabaseManager {
     return this.db;
   }
 
+  async createBackupFile(targetPath) {
+    if (!this.db) {
+      throw new Error('Database is not initialized');
+    }
+
+    await this.db.backup(targetPath);
+  }
+
+  validateDatabaseFile(filePath) {
+    const db = new Database(filePath, { readonly: true, fileMustExist: true });
+    try {
+      const integrity = db.prepare('PRAGMA integrity_check').get();
+      if (!integrity || integrity.integrity_check !== 'ok') {
+        throw new Error('数据库完整性检查失败');
+      }
+
+      const tables = db.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+      `).all().map((row) => row.name);
+
+      const quoteApiTables = ['users', 'repositories', 'quotes', 'access_logs', 'endpoints', 'api_keys', 'system_config'];
+      const matchedTables = quoteApiTables.filter((table) => tables.includes(table));
+
+      if (!tables.includes('users')) {
+        throw new Error('备份文件不是有效的 QuoteAPI 数据库：缺少 users 表');
+      }
+
+      if (matchedTables.length < 2) {
+        throw new Error('备份文件不是有效的 QuoteAPI 数据库：未识别到足够的 QuoteAPI 数据表');
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  async replaceDatabaseFromFile(importPath) {
+    this.validateDatabaseFile(importPath);
+
+    const dbPath = config.dbPath;
+    const dbDir = dirname(dbPath);
+    if (!existsSync(dbDir)) {
+      mkdirSync(dbDir, { recursive: true });
+    }
+
+    const rollbackPath = `${dbPath}.rollback-${Date.now()}`;
+
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
+
+    try {
+      if (existsSync(dbPath)) {
+        renameSync(dbPath, rollbackPath);
+      }
+
+      copyFileSync(importPath, dbPath);
+      this.removeSqliteSidecarFiles(dbPath);
+
+      await this.initialize();
+
+      if (existsSync(rollbackPath)) {
+        unlinkSync(rollbackPath);
+      }
+    } catch (error) {
+      this.close();
+
+      if (existsSync(dbPath)) {
+        unlinkSync(dbPath);
+      }
+      if (existsSync(rollbackPath)) {
+        renameSync(rollbackPath, dbPath);
+      }
+
+      await this.initialize();
+      throw error;
+    }
+  }
+
+  removeSqliteSidecarFiles(dbPath) {
+    [`${dbPath}-wal`, `${dbPath}-shm`].forEach((path) => {
+      if (existsSync(path)) {
+        unlinkSync(path);
+      }
+    });
+  }
+
   close() {
     if (this.db) {
       this.db.close();
+      this.db = null;
     }
   }
 }

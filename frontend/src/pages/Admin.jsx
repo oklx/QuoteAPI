@@ -592,6 +592,131 @@ response = ask_ai("写一首诗", max_tokens=500)`}</pre>
   );
 };
 
+const DataBackupSettings = () => {
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+
+  const getErrorMessage = (err, fallback) => {
+    const data = err.response?.data;
+    if (data?.error) {
+      return data.error;
+    }
+    if (typeof data === 'string') {
+      return data;
+    }
+    return err.message || fallback;
+  };
+
+  const getBackupFilename = (headers) => {
+    const disposition = headers?.['content-disposition'] || '';
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    if (match?.[1]) {
+      return match[1];
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `quoteapi-backup-${timestamp}.db`;
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const response = await adminApi.exportBackup();
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = getBackupFilename(response.headers);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(getErrorMessage(err, '导出失败'));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!selectedFile) {
+      alert('请选择要导入的备份文件');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      '导入会替换当前全部数据，包括用户、仓库、语句、端口、API Key、日志和系统配置。确定继续吗？'
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setImporting(true);
+    try {
+      await adminApi.importBackup(selectedFile);
+      alert('导入成功，页面将刷新');
+      window.location.reload();
+    } catch (err) {
+      alert(getErrorMessage(err, '导入失败，请确认文件是 QuoteAPI 的 SQLite 备份'));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="data-backup-settings card">
+      <div className="data-backup-header">
+        <h2>数据备份</h2>
+        <p className="data-backup-desc">
+          导出或导入完整数据库，包含用户、仓库、语句、端口、API Key、访问日志和系统配置。
+        </p>
+      </div>
+
+      <div className="backup-actions-grid">
+        <div className="backup-action-panel">
+          <h3>导出全部数据</h3>
+          <p>生成 SQLite 一致性备份文件，可用于迁移到新服务器或本地留档。</p>
+          <button
+            className="btn btn-primary"
+            onClick={handleExport}
+            disabled={exporting}
+          >
+            {exporting ? '导出中...' : '下载备份文件'}
+          </button>
+        </div>
+
+        <div className="backup-action-panel">
+          <h3>导入全部数据</h3>
+          <p>上传之前导出的 .db 文件。导入前会校验数据库完整性和必要表结构。</p>
+          <input
+            type="file"
+            accept=".db,.sqlite,.sqlite3,application/octet-stream,application/x-sqlite3"
+            className="backup-file-input"
+            onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+            disabled={importing}
+          />
+          {selectedFile && (
+            <div className="selected-backup-file">
+              已选择：{selectedFile.name}
+            </div>
+          )}
+          <button
+            className="btn btn-danger"
+            onClick={handleImport}
+            disabled={importing || !selectedFile}
+          >
+            {importing ? '导入中...' : '导入并替换当前数据'}
+          </button>
+        </div>
+      </div>
+
+      <div className="backup-note">
+        导入旧版本数据库后，服务端会自动补齐当前版本需要的字段和默认管理员账号。
+      </div>
+    </div>
+  );
+};
+
 const Admin = () => {
   const { loading: authLoading } = useAuth();
   const [users, setUsers] = useState([]);
@@ -666,6 +791,12 @@ const Admin = () => {
           >
             用户管理
           </button>
+          <button
+            className={`admin-tab ${activeTab === 'backup' ? 'active' : ''}`}
+            onClick={() => setActiveTab('backup')}
+          >
+            数据备份
+          </button>
         </div>
 
         {activeTab === 'showcase' && <HomeShowcaseSettings />}
@@ -675,6 +806,8 @@ const Admin = () => {
         {activeTab === 'repositories' && <RepositoryManagement />}
 
         {activeTab === 'endpoints' && <EndpointManagement />}
+
+        {activeTab === 'backup' && <DataBackupSettings />}
 
         {activeTab === 'users' && (
           <div className="admin-section">
